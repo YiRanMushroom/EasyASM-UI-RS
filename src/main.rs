@@ -1,20 +1,15 @@
-mod components;
+#![windows_subsystem = "windows"]
 
-use crate::components::file_selector::FileSelector;
-use iced::Length;
 use iced::application::{Title, Update};
-use iced::widget::{Row, button, center, checkbox, column, container, row, text, text_input};
-use iced::{Application, Settings};
-use iced::{Center, Element, Fill, Font, Task, Theme};
-use rfd::{AsyncFileDialog, FileDialog};
+use iced::widget::{button, column, container, row, text_input};
+use iced::{Element, Task};
+use rfd::AsyncFileDialog;
 use std::fmt::Debug;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 pub fn main() -> iced::Result {
-    iced::application("EasyASM", App::update, App::view)
-        .font(include_bytes!("../fonts/icons.ttf").as_slice())
-        .run()
+    iced::application("EasyASM", App::update, App::view).run()
 }
 
 #[derive(Default)]
@@ -108,7 +103,6 @@ impl App {
                     path.map_or(Message::None, |p| {
                         Message::make_dynamic(move |app| {
                             app.output_directory = p;
-                            println!("Output Directory: {}", app.output_directory);
                             Task::none()
                         })
                     })
@@ -129,23 +123,110 @@ impl App {
     fn compile_button(&self) -> Element<Message> {
         button("Compile")
             .on_press(Message::make_dynamic(|app| {
-
+                let source_file_location = app.source_file_location.clone();
+                let output_directory = app.output_directory.clone();
+                Task::perform(
+                    async move {
+                        App::do_compile(source_file_location, output_directory).await
+                    },
+                    |result| {
+                        match result {
+                            ExecutionResult::WithErrorCode(code, message) => {
+                                let error_message = format!("Compiler crashed with error code: {}\n\nMessage: {:?}", code, message);
+                                Message::make_dynamic(move |_app| {
+                                    Task::perform(
+                                        async move {
+                                            App::pop_message("Error", &error_message).await;
+                                        },
+                                        |_| Message::None,
+                                    )
+                                })
+                            }
+                            ExecutionResult::WithExecutionError(err) => {
+                                let error_message = format!("Failed to execute compiler: {}", err);
+                                Message::make_dynamic(move |_app| {
+                                    Task::perform(
+                                        async move {
+                                            App::pop_message("Execution Error", &error_message).await;
+                                        },
+                                        |_| Message::None,
+                                    )
+                                })
+                            }
+                            ExecutionResult::WithOutput(output) => {
+                                match (output.stdout, output.stderr) {
+                                    (Some(stdout), Some(stderr)) => {
+                                        let message = format!("Compilation succeeded.\n\nOutput:\n{}\n\nPossible Errors:\n{}", stdout, stderr);
+                                        Message::make_dynamic(move |_app| {
+                                            Task::perform(
+                                                async move {
+                                                    App::pop_message("Compilation Result", &message).await;
+                                                },
+                                                |_| Message::None,
+                                            )
+                                        })
+                                    }
+                                    (Some(stdout), None) => {
+                                        let message = format!("{}", stdout);
+                                        Message::make_dynamic(move |_app| {
+                                            Task::perform(
+                                                async move {
+                                                    App::pop_message("Compilation Succeed", &message).await;
+                                                },
+                                                |_| Message::None,
+                                            )
+                                        })
+                                    }
+                                    (None, Some(stderr)) => {
+                                        let message = format!("{}", stderr);
+                                        Message::make_dynamic(move |_app| {
+                                            Task::perform(
+                                                async move {
+                                                    App::pop_message("Compilation Failed", &message).await;
+                                                },
+                                                |_| Message::None,
+                                            )
+                                        })
+                                    }
+                                    (None, None) => {
+                                        Message::make_dynamic(move |_app| {
+                                            Task::perform(
+                                                App::pop_message("Compilation Result", "Compilation completed with no output."),
+                                                |_| Message::None,
+                                            )
+                                        })
+                                    }
+                                }
+                            },
+                            _ => Message::None
+                        }
+                    }
+                )
             }))
             .into()
     }
 
     fn view(&self) -> Element<Message> {
-        container(column![self.source_file_select(), self.output_directory_select()].spacing(20))
-            .padding(10)
-            .into()
+        container(
+            column![
+                self.source_file_select(),
+                self.output_directory_select(),
+                self.compile_button()
+            ]
+            .spacing(20),
+        )
+        .padding(10)
+        .into()
     }
 
-    async fn do_compile(self_source_file_location: String, self_output_directory: String) -> ExecutionResult {
+    async fn do_compile(
+        self_source_file_location: String,
+        self_output_directory: String,
+    ) -> ExecutionResult {
         let source_file_location: String;
         let output_directory: Option<String>;
 
         if self_source_file_location.is_empty() {
-            Self::pop_message("Error", "Source file location is empty").await;
             return ExecutionResult::WithExecutionError(
                 "Source file location is empty".to_string(),
             );
@@ -161,7 +242,10 @@ impl App {
 
         let mut args: Vec<String> = Vec::new();
         args.push("-l".to_string());
-        args.push("PicoBlaze".to_string());
+
+        let PicoBlaze_path = std::env::current_dir().unwrap().join("PicoBlaze");
+
+        args.push(PicoBlaze_path.to_string_lossy().to_string());
         args.push("-i".to_string());
         args.push(source_file_location);
 
@@ -171,7 +255,7 @@ impl App {
         }
 
         execute_program(
-            "easyasm-compiler",
+            "EasyASM.exe",
             &args.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
         )
         .await
@@ -184,9 +268,10 @@ struct StdoutOutput {
 }
 
 enum ExecutionResult {
-    WithErrorCode(i32),
+    WithErrorCode(i32, Option<String>),
     WithExecutionError(String),
     WithOutput(StdoutOutput),
+    None,
 }
 
 async fn execute_program(command: &str, args: &[&str]) -> ExecutionResult {
@@ -202,13 +287,16 @@ async fn execute_program(command: &str, args: &[&str]) -> ExecutionResult {
 
             if output.status.success() {
                 ExecutionResult::WithOutput(StdoutOutput {
-                    stdout: stdout.is_empty().then(move || stdout),
-                    stderr: stderr.is_empty().then(move || stderr),
+                    stdout: (!stdout.is_empty()).then(move || stdout),
+                    stderr: (!stderr.is_empty()).then(move || stderr),
                 })
             } else {
-                ExecutionResult::WithErrorCode(output.status.code().unwrap_or(-1))
+                ExecutionResult::WithErrorCode(
+                    output.status.code().unwrap_or(-1),
+                    format!("Stdout: {}\nStderr: {}", stdout, stderr).into(),
+                )
             }
         }
-        Err(e) => return e,
+        Err(e) => e,
     }
 }
