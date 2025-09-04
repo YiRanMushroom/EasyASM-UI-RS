@@ -66,7 +66,7 @@ impl App {
             .await
             .map(|file| file.path().to_string_lossy().to_string())
     }
-    fn source_file_select(&self) -> Row<Message> {
+    fn source_file_select(&self) -> Element<Message> {
         row![
             text_input("Source File", &self.source_file_location).on_input(|value| {
                 Message::make_dynamic(move |app| {
@@ -85,6 +85,7 @@ impl App {
                 })
             }))
         ]
+        .into()
     }
 
     async fn pick_output_directory() -> Option<String> {
@@ -94,7 +95,7 @@ impl App {
             .map(|folder| folder.path().to_string_lossy().to_string())
     }
 
-    fn output_directory_select(&self) -> Row<Message> {
+    fn output_directory_select(&self) -> Element<Message> {
         row![
             text_input("Output Directory", &self.output_directory).on_input(|value| {
                 Message::make_dynamic(move |app| {
@@ -104,7 +105,6 @@ impl App {
             }),
             button("Browse").on_press(Message::make_dynamic(|_app: &mut App| {
                 Task::perform(Self::pick_output_directory(), |path| {
-
                     path.map_or(Message::None, |p| {
                         Message::make_dynamic(move |app| {
                             app.output_directory = p;
@@ -115,11 +115,100 @@ impl App {
                 })
             }))
         ]
+        .into()
+    }
+
+    async fn pop_message(title: &str, message: &str) {
+        rfd::AsyncMessageDialog::new()
+            .set_title(title)
+            .set_description(message)
+            .show()
+            .await;
+    }
+
+    fn compile_button(&self) -> Element<Message> {
+        button("Compile")
+            .on_press(Message::make_dynamic(|app| {
+
+            }))
+            .into()
     }
 
     fn view(&self) -> Element<Message> {
         container(column![self.source_file_select(), self.output_directory_select()].spacing(20))
             .padding(10)
             .into()
+    }
+
+    async fn do_compile(self_source_file_location: String, self_output_directory: String) -> ExecutionResult {
+        let source_file_location: String;
+        let output_directory: Option<String>;
+
+        if self_source_file_location.is_empty() {
+            Self::pop_message("Error", "Source file location is empty").await;
+            return ExecutionResult::WithExecutionError(
+                "Source file location is empty".to_string(),
+            );
+        } else {
+            source_file_location = self_source_file_location.clone();
+        }
+
+        if self_output_directory.is_empty() {
+            output_directory = None;
+        } else {
+            output_directory = Some(self_output_directory.clone());
+        }
+
+        let mut args: Vec<String> = Vec::new();
+        args.push("-l".to_string());
+        args.push("PicoBlaze".to_string());
+        args.push("-i".to_string());
+        args.push(source_file_location);
+
+        if let Some(output_dir) = output_directory {
+            args.push("-o".to_string());
+            args.push(output_dir);
+        }
+
+        execute_program(
+            "easyasm-compiler",
+            &args.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+        )
+        .await
+    }
+}
+
+struct StdoutOutput {
+    stdout: Option<String>,
+    stderr: Option<String>,
+}
+
+enum ExecutionResult {
+    WithErrorCode(i32),
+    WithExecutionError(String),
+    WithOutput(StdoutOutput),
+}
+
+async fn execute_program(command: &str, args: &[&str]) -> ExecutionResult {
+    let output = Command::new(command)
+        .args(args)
+        .output()
+        .map_err(|e| ExecutionResult::WithExecutionError(e.to_string()));
+
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if output.status.success() {
+                ExecutionResult::WithOutput(StdoutOutput {
+                    stdout: stdout.is_empty().then(move || stdout),
+                    stderr: stderr.is_empty().then(move || stderr),
+                })
+            } else {
+                ExecutionResult::WithErrorCode(output.status.code().unwrap_or(-1))
+            }
+        }
+        Err(e) => return e,
     }
 }
