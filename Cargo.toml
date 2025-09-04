@@ -4,12 +4,12 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.13.1", features = ["canvas", "svg"] }
+iced = { version = "0.13.1", features = ["canvas", "svg", "highlighter", "tokio", "debug"] }
 tokio = { version = "1.28", features = ["full"] }
 rfd = "0.15.4"
 
 #iced.workspace = true
-#iced.features = ["highlighter", "tokio", "debug"]
+#iced.features = []
 #
 #tokio.workspace = true
 #tokio.features = ["fs"]

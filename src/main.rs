@@ -1,58 +1,125 @@
 mod components;
 
-use crate::Message::FileSelectorMessage;
 use crate::components::file_selector::FileSelector;
-use iced::widget::{button, column, container, row, text, text_input};
+use iced::Length;
+use iced::application::{Title, Update};
+use iced::widget::{Row, button, center, checkbox, column, container, row, text, text_input};
 use iced::{Application, Settings};
 use iced::{Center, Element, Fill, Font, Task, Theme};
-use iced::application::{Title, Update};
-use rfd::FileDialog;
-
-struct State;
+use rfd::{AsyncFileDialog, FileDialog};
+use std::fmt::Debug;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 pub fn main() -> iced::Result {
-    todo!()
+    iced::application("EasyASM", App::update, App::view)
+        .font(include_bytes!("../fonts/icons.ttf").as_slice())
+        .run()
 }
 
-struct EasyASMApp {
-    file_selector: FileSelector,
+#[derive(Default)]
+struct App {
+    source_file_location: String,
+    output_directory: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Message {
-    FileSelectorMessage(components::file_selector::Message),
+    Dynamic(Arc<Mutex<Option<Box<dyn FnOnce(&mut App) -> Task<Message> + Send>>>>),
+    None,
 }
 
-impl EasyASMApp {
-    fn new() -> Self {
-        Self {
-            file_selector: FileSelector::with_label("Source File:"),
+impl Message {
+    fn make_dynamic<'a>(f: impl FnOnce(&mut App) -> Task<Message> + Send + 'static) -> Self {
+        Message::Dynamic(Arc::new(Mutex::new(Some(Box::new(f)))))
+    }
+}
+
+impl Debug for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Message::Dynamic(_) => write!(f, "Message::Dynamic"),
+            Message::None => write!(f, "Message::None"),
         }
+    }
+}
+
+impl App {
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Dynamic(callback) => {
+                let mut cb = callback.lock().unwrap();
+                if let Some(f) = cb.take() {
+                    f(self)
+                } else {
+                    Task::none()
+                }
+            }
+            _ => Task::none(),
+        }
+    }
+
+    async fn pick_psm_file() -> Option<String> {
+        AsyncFileDialog::new()
+            .add_filter("Assembly Files", &["psm"])
+            .pick_file()
+            .await
+            .map(|file| file.path().to_string_lossy().to_string())
+    }
+    fn source_file_select(&self) -> Row<Message> {
+        row![
+            text_input("Source File", &self.source_file_location).on_input(|value| {
+                Message::make_dynamic(move |app| {
+                    app.source_file_location = value;
+                    Task::none()
+                })
+            }),
+            button("Browse").on_press(Message::make_dynamic(|app| {
+                Task::perform(Self::pick_psm_file(), |path| {
+                    path.map_or(Message::None, |p| {
+                        Message::make_dynamic(move |app| {
+                            app.source_file_location = p;
+                            Task::none()
+                        })
+                    })
+                })
+            }))
+        ]
+    }
+
+    async fn pick_output_directory() -> Option<String> {
+        AsyncFileDialog::new()
+            .pick_folder()
+            .await
+            .map(|folder| folder.path().to_string_lossy().to_string())
+    }
+
+    fn output_directory_select(&self) -> Row<Message> {
+        row![
+            text_input("Output Directory", &self.output_directory).on_input(|value| {
+                Message::make_dynamic(move |app| {
+                    app.output_directory = value;
+                    Task::none()
+                })
+            }),
+            button("Browse").on_press(Message::make_dynamic(|_app: &mut App| {
+                Task::perform(Self::pick_output_directory(), |path| {
+
+                    path.map_or(Message::None, |p| {
+                        Message::make_dynamic(move |app| {
+                            app.output_directory = p;
+                            println!("Output Directory: {}", app.output_directory);
+                            Task::none()
+                        })
+                    })
+                })
+            }))
+        ]
     }
 
     fn view(&self) -> Element<Message> {
-        // return view of file selector
-        self.file_selector.view().map(FileSelectorMessage)
-    }
-
-    fn update(&mut self, message: Message) -> Task<Message> {
-        match message {
-            Message::FileSelectorMessage(msg) => {
-                self.file_selector.update(msg);
-                Task::none()
-            }
-        }
-    }
-}
-
-impl Title<State> for EasyASMApp {
-    fn title(&self, state: &State) -> String {
-        "EasyASM".to_string()
-    }
-}
-
-impl Update<State, Message> for EasyASMApp {
-    fn update(&self, state: &mut State, message: Message) -> impl Into<Task<Message>> {
-        todo!()
+        container(column![self.source_file_select(), self.output_directory_select()].spacing(20))
+            .padding(10)
+            .into()
     }
 }
